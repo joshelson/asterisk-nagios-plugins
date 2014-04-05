@@ -1,0 +1,202 @@
+#! /bin/sh
+#
+# Check Asterisk ODBC connections plugin for Nagios.
+# Written by Chad Phillips (chad@apartmentlines.com)
+# Modified by Joshua Elson (josh@fluentstream.com
+# Last modified
+
+ASTERISK=`which asterisk`
+
+PROGPATH=`dirname $0`
+REVISION=`echo '$Revision: 1 $' | sed -e 's/[^0-9.]//g'`
+
+. $PROGPATH/utils.sh
+
+print_usage() {
+    echo "
+Usage: check_asterisk_odbc_connections [--databases | -d <databases>] [-V]
+Usage: check_asterisk_odbc_connections --help | -h
+
+Description:
+
+This plugin tests the connectivity of ODBC databases configured via Asterisk's
+res_odbc.conf file.  
+
+Tested to work on Linux.
+
+The following arguments are accepted:
+
+  --databases | -d  (Optional) A space separated list of ODBC databases to
+                    check.  The names are the section names of the databases
+                    listed in the res_odbc.conf Asterisk configuration file.
+                    If this option is left out, then all configured databases
+                    will be checked.
+
+  -V                (Optional) Output verbose information, useful for 
+                    debugging.
+
+  --help | -h       Print this help and exit.
+
+Examples:
+
+Check all configured Asterisk ODBC databases:
+
+  check_asterisk_odbc_connections
+
+Check the 'foo' and 'bar' connections:
+
+  check_asterisk_odbc_connections \"foo bar\"
+
+
+Caveats:
+
+This plugin calls the asterisk executable directly, so make sure that the user
+executing this script has appropriate permissions!  Usually the asterisk binary
+can only be run by the asterisk user or root. To grant the nagios user
+permissions to execute the script, try something like the following in your
+/etc/sudoers file:
+  nagios ALL=(ALL) NOPASSWD: /path/to/plugins/directory/check_asterisk_odbc_connections
+
+Then call the plugin using sudo:
+  /path/to/sudo check_asterisk_odbc_connections
+"
+}
+
+print_help() {
+    print_usage
+    echo "Check Asterisk ODBC connections plugin for Nagios."
+    echo ""
+}
+
+# Sets the exit status for the plugin.  This is done in such a way that the
+# status can only go in one direction: OK -> WARNING -> CRITICAL.
+set_exit_status() {
+	new_status=$1
+	# Nothing needs to be done if the state is already critical, so exclude
+	# that case.
+	case $exitstatus
+	in
+		$STATE_WARNING)
+			# Only upgrade from warning to critical.
+			if [ "$new_status" = "$STATE_CRITICAL" ]; then
+				exitstatus=$new_status;
+			fi
+		;;
+		$STATE_OK)
+			# Always update state if current state is OK.
+			exitstatus=$new_status;
+		;;
+	esac
+}
+
+# Ensures that a call to the Asterisk process returns successfully.  Exits
+# critical if not.
+check_asterisk_result() {
+	if [ "$1" != "0" ]; then
+		echo "CRITICAL: $2"
+		exit $STATE_CRITICAL
+	fi
+}
+
+# Defaults.
+exitstatus=$STATE_OK
+verbose=
+output=
+test_errors=
+test_ok=
+databases=
+
+# Grab the command line arguments.
+while test -n "$1"; do
+    case "$1" in
+        --help)
+            print_help
+            exit $STATE_OK
+            ;;
+        -h)
+            print_help
+            exit $STATE_OK
+            ;;
+        --databases)
+            databases=$2
+            shift
+            ;;
+        -d)
+            databases=$2
+            shift
+            ;;
+		-V)
+			verbose=1
+            ;;
+        -x)
+            exitstatus=$2
+            shift
+            ;;
+        --exitstatus)
+            exitstatus=$2
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            print_usage
+            exit $STATE_UNKNOWN
+            ;;
+    esac
+    shift
+done
+
+# If no databases were provided, then check all configured databases.
+if [ ! "$databases" ]; then
+	command_output=`$ASTERISK -rx "odbc show" 2>&1`
+	check_asterisk_result $? "$command_output"
+	databases=`echo "$command_output" | grep ^Name: | cut -d " " -f 2`
+fi
+
+# Check each database.
+for db in $databases
+do
+	if [ "$db" ]; then
+		# Test asterisk recognition of ODBC connection.
+		command_output=`$ASTERISK -rx "odbc show $db" 2>&1`
+		check_asterisk_result $? "$command_output"
+		if [ "$verbose" ]; then
+			echo "Checking ${db}:"
+			echo "$command_output"
+			echo ""
+		fi
+		
+		# Check the status of the connection.
+		status_yes=`echo "$command_output" | grep "^Connected: yes$"`
+		if [ "$status_yes" ]; then
+			if [ "$test_ok" ]; then
+				test_ok="${test_ok}, $db"
+			else
+				test_ok=$db
+			fi
+		else
+			if [ "$test_errors" ]; then
+				test_errors="${test_errors}, $db"
+			else
+				test_errors=$db
+			fi
+		fi
+	fi
+done
+
+if [ "$test_errors" ]; then
+	output="$output ERROR: $test_errors"
+	set_exit_status $STATE_CRITICAL
+fi
+
+if [ "$test_ok" ]; then
+	output="$output OK: $test_ok"
+fi
+
+if [ ! "$output" ]; then
+	echo "UNKNOWN: No output"
+	exit $STATE_UNKNOWN
+fi
+
+echo "$output"
+exit $exitstatus
+
