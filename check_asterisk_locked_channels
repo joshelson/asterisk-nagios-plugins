@@ -4,12 +4,16 @@
 # Original Written by Chad Phillips (chad@apartmentlines.com)
 # Modified by Bryan Nelson for length check (bnelson@fluentstream.com)
 # Last Modified: 2013-08-06
-
+# Modified by Joshua Elson for format and length analysis
+# Last Modified: 2014-05-11
 
 PROGPATH=`dirname $0`
 REVISION=`echo '$Revision: 1 $' | sed -e 's/[^0-9.]//g'`
 DATETIME=`date "+%Y-%m-%d %H:%M:%S"`
 TAB="	"
+
+# seconds to indicate we have a stuck channel
+stuck_length=$((10*60*60))
 
 #. $PROGPATH/utils.sh
 
@@ -60,15 +64,16 @@ set_exit_status() {
 	new_status=$1
 	# Nothing needs to be done if the state is already critical, so exclude
 	# that case.
-	case $exitstatus
+	# echo "Changing exit status to $new_status from exit status $exitstatus"
+	case "$exitstatus"
 	in
-		$STATE_WARNING)
+		WARNING)
 			# Only upgrade from warning to critical.
 			if [ "$new_status" = "$STATE_CRITICAL" ]; then
 				exitstatus=$new_status;
 			fi
 		;;
-		$STATE_OK)
+		OK)
 			# Always update state if current state is OK.
 			exitstatus=$new_status;
 		;;
@@ -79,16 +84,19 @@ set_exit_status() {
 # critical if not.
 check_asterisk_result() {
 	if [ "$1" != "0" ]; then
-		echo "CRITICAL: $2"
 		exit $STATE_CRITICAL
 	fi
 }
 
 # Defaults.
+
+STATE_OK=OK
+STATE_WARNING=WARNING
+STATE_CRITICAL=CRITICAL
+
 exitstatus=$STATE_OK
 lockchan_warning=-1
 lockchan_critical=-1
-
 
 # Grab the command line arguments.
 while test -n "$1"; do
@@ -144,42 +152,66 @@ fi
 
 
 # Fetch the data from asterisk.
-command_output=`asterisk -rx "core show channels verbose"`
+command_output=`asterisk -rx "core show channels concise" | grep '!' | grep -v 'Privilege escalation' | sort -r -g -t '!' -k 12 | cut -d '!' -f1,12`
 #echo "$command_output"
-# Parse the data.
-lockchan_count=`echo "$command_output"|grep '[1-9][0-9]:[0-9][0-9]:[0-9][0-9]' | wc -l`
-lockchan_fullline=`echo "$command_output"|grep '[1-9][0-9]:[0-9][0-9]:[0-9][0-9]'`
-#echo "$lockchan_count"
-#echo "$lockchan_fullline"
+
+# Full command for debugging:
+# asterisk -rx "core show channels concise" | grep '!' | grep -v 'Privilege escalation' | sort -r -g -t '!' -k 12 | cut -d '!' -f12,1
+
+stuck_channel_output=
+
+# Figure out if we have any stuck channels
+for line in $command_output; do
+	IFS='!' read -a array_out <<< "$line"
+	channel_name="${array_out[0]}"
+	channel_time="${array_out[1]}"
+	# echo "Channel with $channel_name has been up for $channel_time seconds"
+	if [ "$channel_time" -gt "$stuck_length" ]; then
+		lockchan_count=$(($lockchan_count+1))
+		# echo "This channel is stuck $channel_name"
+		stuck_channel_output="[$channel_name,$channel_time] $stuck_channel_output"
+	else
+		# All channels from here on out (because of sort) will be good. Break.
+		break
+	fi
+done
+
+# Decrement the counters so our "-gt"s work as expected
+lockchan_critical=$(($lockchan_critical-1))
+lockchan_warning=$(($lockchan_warning-1))
+
 # Test for warning/critical channels.
-if [ "$lockchan_critical" != "-1" ] && [ "$lockchan_count" -gt "$lockchan_critical" ]; then
+if [ "$lockchan_critical" -gt "-1" ] && [ "$lockchan_count" -gt "$lockchan_critical" ]; then
 	set_exit_status $STATE_CRITICAL
-elif [ "$lockchan_warning" != "-1" ] && [ "$lockchan_count" -gt "$lockchan_warning" ]; then
+elif [ "$lockchan_warning" -gt "-1" ] && [ "$lockchan_count" -gt "$lockchan_warning" ]; then
 	set_exit_status $STATE_WARNING
-elif [ "$lockchan_count" != "0" ]; then
+elif [ "$lockchan_count" = "0" ]; then
+	# echo "Setting exit status to $STATE_OK"
         set_exit_status $STATE_OK
 fi
 
-
 case $exitstatus
 in
-	$STATE_CRITICAL)
+	CRITICAL)
+		exit_code=2;
 		exit_message="CRITICAL";
 	;;
-	$STATE_WARNING)
+	WARNING)
+		exit_code=1;
 		exit_message="WARNING";
 	;;
-	$STATE_OK)
+	OK)
+		exit_code=0;
 		exit_message="OK";
 	;;
 	*)
-		echo "UNKNOWN"
+		exit_code=3;
 		exit $STATE_UNKNOWN;
 		
 	;;
 esac
 
-echo "${exit_message}: $lockchan_count Locked Channels, | ${DATETIME}";
+echo "${exit_message}: $lockchan_count Locked Channels, $stuck_channel_output | ${DATETIME}";
 
-exit $exitstatus
+exit $exit_code
 
