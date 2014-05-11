@@ -159,6 +159,7 @@ command_output=`asterisk -rx "core show channels concise" | grep '!' | grep -v '
 # asterisk -rx "core show channels concise" | grep '!' | grep -v 'Privilege escalation' | sort -r -g -t '!' -k 12 | cut -d '!' -f12,1
 
 stuck_channel_output=
+lockchan_count=0
 
 # Figure out if we have any stuck channels
 for line in $command_output; do
