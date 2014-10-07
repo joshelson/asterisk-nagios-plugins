@@ -10,7 +10,9 @@ ASTERISK=`which asterisk`
 PROGPATH=`dirname $0`
 REVISION=`echo '$Revision: 1 $' | sed -e 's/[^0-9.]//g'`
 
-. $PROGPATH/utils.sh
+# . $PROGPATH/utils.sh
+
+. /usr/lib64/nagios/plugins/utils.sh
 
 print_usage() {
     echo "
@@ -166,21 +168,22 @@ do
 		fi
 		
 		# Check the status of the connection.
-		status_yes=`echo "$command_output" | grep "^Connected: yes$"`
-		if [ "$status_yes" ]; then
-			if [ "$test_ok" ]; then
-				test_ok="${test_ok}, $db"
-			else
-				test_ok=$db
-			fi
-		else
-			if [ "$test_errors" ]; then
-				test_errors="${test_errors}, $db"
-			else
-				test_errors=$db
-			fi
+		connection_count=`echo "$command_output" | awk -F'Connections in use: ' '{print $2}' | tr -d ' '`
+		# echo $status_yes
+
+		if [ -z "$connection_count" ]; then
+			echo "We don't have a database connection"
+			test_errors="NO DATABASE CONNECTION"
+			break
+		fi
+
+		if [ "$connection_count" -gt 40 ]; then
+			echo "Got too many connections"
+			output=`$ASTERISK -rx "module reload res_odbc.so" 2>&1`
+			test_ok="1"
 		fi
 	fi
+	
 done
 
 if [ "$test_errors" ]; then
@@ -192,11 +195,10 @@ if [ "$test_ok" ]; then
 	output="$output OK: $test_ok"
 fi
 
-if [ ! "$output" ]; then
+if [ ! "$command_output" ]; then
 	echo "UNKNOWN: No output"
 	exit $STATE_UNKNOWN
 fi
 
 echo "$output"
 exit $exitstatus
-
